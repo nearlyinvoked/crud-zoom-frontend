@@ -11,6 +11,7 @@ import {
   Calendar,
   Clock,
   Trash2,
+  Plus,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -49,7 +50,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { type ZoomMeeting, deleteMeeting } from "../../zoom-api";
+import { type ZoomMeeting } from "../../zoom-api";
 
 export default function ZoomCalendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -59,6 +60,7 @@ export default function ZoomCalendar() {
     null
   );
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
   const [editedMeeting, setEditedMeeting] = useState<{
@@ -70,6 +72,23 @@ export default function ZoomCalendar() {
     start_time: "",
     duration: 30,
   });
+
+  // Format datetime-local input value
+  const formatDateTimeLocal = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toISOString().slice(0, 16);
+  };
+
+  const [newMeeting, setNewMeeting] = useState<{
+    topic: string;
+    start_time: string;
+    duration: number;
+  }>({
+    topic: "",
+    start_time: formatDateTimeLocal(new Date().toISOString()),
+    duration: 30,
+  });
+  const [isCreating, setIsCreating] = useState(false);
 
   const months = [
     "January",
@@ -97,7 +116,6 @@ export default function ZoomCalendar() {
   // Get last day of the month
   const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
 
-  // Fetch meetings when month changes
   useEffect(() => {
     const loadMeetings = async () => {
       setLoading(true);
@@ -163,12 +181,6 @@ export default function ZoomCalendar() {
     const startTime = new Date(startTimeString);
     const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
     return formatTime(endTime.toISOString());
-  };
-
-  // Format datetime-local input value
-  const formatDateTimeLocal = (dateString: string): string => {
-    const date = new Date(dateString);
-    return date.toISOString().slice(0, 16);
   };
 
   const handleMonthChange = (value: string) => {
@@ -270,7 +282,14 @@ export default function ZoomCalendar() {
     if (!selectedMeeting) return;
 
     try {
-      await deleteMeeting(selectedMeeting.id);
+      await axios.delete(
+        `http://localhost:8080/v1/zoom/delete/${selectedMeeting.id}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
       // Remove the meeting from the list
       setMeetings((prev) =>
@@ -289,15 +308,96 @@ export default function ZoomCalendar() {
     setIsDeleteDialogOpen(false);
   };
 
+  const handleNewMeetingChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setNewMeeting((prev) => ({
+      ...prev,
+      [name]: name === "duration" ? Number.parseInt(value) : value,
+    }));
+  };
+
+  const handleNewMeetingDurationChange = (value: string) => {
+    setNewMeeting((prev) => ({
+      ...prev,
+      duration: Number.parseInt(value),
+    }));
+  };
+
+  const handleCreateMeetingClick = () => {
+    // Set default time to current time rounded to nearest 30 minutes
+    const now = new Date();
+    now.setMinutes(Math.ceil(now.getMinutes() / 30) * 30);
+    now.setSeconds(0);
+    now.setMilliseconds(0);
+
+    setNewMeeting({
+      topic: "",
+      start_time: formatDateTimeLocal(now.toISOString()),
+      duration: 30,
+    });
+
+    setIsCreateDialogOpen(true);
+  };
+
+  const handleCreateMeeting = async () => {
+    if (!newMeeting.topic || !newMeeting.start_time) {
+      return;
+    }
+
+    setIsCreating(true);
+
+    try {
+      const response = await axios.post(
+        "http://localhost:8080/v1/zoom/create",
+        {
+          agenda: newMeeting.topic,
+          meeting_time: new Date(newMeeting.start_time).toISOString(),
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const createdMeeting = response.data;
+
+      // Add the new meeting to the list
+      setMeetings((prev) => [...prev, createdMeeting]);
+
+      setIsCreateDialogOpen(false);
+
+      // If the meeting is in a different month, navigate to that month
+      const meetingDate = new Date(createdMeeting.start_time);
+      const meetingMonth = meetingDate.getMonth();
+      const meetingYear = meetingDate.getFullYear();
+
+      if (meetingMonth !== currentMonth || meetingYear !== currentYear) {
+        const newDate = new Date(currentDate);
+        newDate.setMonth(meetingMonth);
+        newDate.setFullYear(meetingYear);
+        setCurrentDate(newDate);
+      }
+    } catch (error) {
+      console.error("Failed to create meeting:", error);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   return (
     <>
       <Card className="w-full max-w-5xl mx-auto">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
-            <Button variant="outline" size="icon" onClick={handlePreviousMonth}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handlePreviousMonth}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
               <Select
                 value={currentMonth.toString()}
                 onValueChange={handleMonthChange}
@@ -314,9 +414,14 @@ export default function ZoomCalendar() {
                 </SelectContent>
               </Select>
               <CardTitle>{currentYear}</CardTitle>
+              <Button variant="outline" size="icon" onClick={handleNextMonth}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
             </div>
-            <Button variant="outline" size="icon" onClick={handleNextMonth}>
-              <ChevronRight className="h-4 w-4" />
+
+            <Button onClick={handleCreateMeetingClick} className="gap-1">
+              <Plus className="h-4 w-4" />
+              New Meeting
             </Button>
           </div>
         </CardHeader>
@@ -570,6 +675,80 @@ export default function ZoomCalendar() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Meeting Dialog */}
+      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Create New Meeting</DialogTitle>
+            <DialogDescription>Schedule a new Zoom meeting.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-topic">Agenda</Label>
+              <Input
+                id="new-topic"
+                name="topic"
+                placeholder="Meeting agenda"
+                value={newMeeting.topic}
+                onChange={handleNewMeetingChange}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="new-start-time">Meeting Time</Label>
+              <Input
+                id="new-start-time"
+                name="start_time"
+                type="datetime-local"
+                value={newMeeting.start_time}
+                onChange={handleNewMeetingChange}
+              />
+              <p className="text-xs text-muted-foreground">
+                Time will be stored as timestamptz in the database
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="new-duration">Duration</Label>
+              <Select
+                value={newMeeting.duration.toString()}
+                onValueChange={handleNewMeetingDurationChange}
+              >
+                <SelectTrigger id="new-duration">
+                  <SelectValue placeholder="Select duration" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="15">15 minutes</SelectItem>
+                  <SelectItem value="30">30 minutes</SelectItem>
+                  <SelectItem value="45">45 minutes</SelectItem>
+                  <SelectItem value="60">1 hour</SelectItem>
+                  <SelectItem value="90">1.5 hours</SelectItem>
+                  <SelectItem value="120">2 hours</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCreateDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateMeeting}
+              disabled={
+                isCreating || !newMeeting.topic || !newMeeting.start_time
+              }
+            >
+              {isCreating ? "Creating..." : "Create Meeting"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
