@@ -1,6 +1,5 @@
-"use client";
-
 import type React from "react";
+import axios from "axios";
 
 import { useState, useEffect } from "react";
 import {
@@ -50,12 +49,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  getUserMeetings,
-  type ZoomMeeting,
-  updateMeeting,
-  deleteMeeting,
-} from "../../zoom-api";
+import { type ZoomMeeting, deleteMeeting } from "../../zoom-api";
 
 export default function ZoomCalendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -108,10 +102,9 @@ export default function ZoomCalendar() {
     const loadMeetings = async () => {
       setLoading(true);
       try {
-        const startDate = new Date(currentYear, currentMonth, 1);
-        const endDate = new Date(currentYear, currentMonth + 1, 0);
-        const data = await getUserMeetings(startDate, endDate);
-        setMeetings(data);
+        const response = await fetch("http://localhost:8080/v1/zoom/");
+        const data = await response.json();
+        setMeetings(data.meetings);
       } catch (error) {
         console.error("Failed to fetch meetings:", error);
       } finally {
@@ -240,11 +233,20 @@ export default function ZoomCalendar() {
     if (!selectedMeeting) return;
 
     try {
-      const updatedMeeting = await updateMeeting(selectedMeeting.id, {
-        topic: editedMeeting.topic,
-        start_time: editedMeeting.start_time,
-        duration: editedMeeting.duration,
-      });
+      const response = await axios.patch(
+        `http://localhost:8080/v1/zoom/update/${selectedMeeting.id}`,
+        {
+          agenda: editedMeeting.topic,
+          meeting_time: new Date(editedMeeting.start_time).toISOString(),
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const updatedMeeting = response.data;
 
       // Update the meetings list
       setMeetings((prev) =>
