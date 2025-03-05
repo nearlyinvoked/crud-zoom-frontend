@@ -1,3 +1,7 @@
+"use client";
+
+import type React from "react";
+
 import { useState, useEffect } from "react";
 import {
   ChevronLeft,
@@ -5,10 +9,23 @@ import {
   Video,
   Users,
   ExternalLink,
+  Calendar,
+  Clock,
+  Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -22,12 +39,43 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getUserMeetings, type ZoomMeeting } from "../../zoom-api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  getUserMeetings,
+  type ZoomMeeting,
+  updateMeeting,
+  deleteMeeting,
+} from "../../zoom-api";
 
 export default function ZoomCalendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [meetings, setMeetings] = useState<ZoomMeeting[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedMeeting, setSelectedMeeting] = useState<ZoomMeeting | null>(
+    null
+  );
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
+  const [editedMeeting, setEditedMeeting] = useState<{
+    topic: string;
+    start_time: string;
+    duration: number;
+  }>({
+    topic: "",
+    start_time: "",
+    duration: 30,
+  });
 
   const months = [
     "January",
@@ -103,6 +151,17 @@ export default function ZoomCalendar() {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
+  // Format date to display in a readable format
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString([], {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
   // Calculate end time based on start time and duration
   const calculateEndTime = (
     startTimeString: string,
@@ -111,6 +170,12 @@ export default function ZoomCalendar() {
     const startTime = new Date(startTimeString);
     const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
     return formatTime(endTime.toISOString());
+  };
+
+  // Format datetime-local input value
+  const formatDateTimeLocal = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toISOString().slice(0, 16);
   };
 
   const handleMonthChange = (value: string) => {
@@ -131,148 +196,407 @@ export default function ZoomCalendar() {
     setCurrentDate(newDate);
   };
 
-  const openMeetingLink = (url: string) => {
+  const openMeetingLink = (url: string, e: React.MouseEvent) => {
+    e.stopPropagation();
     window.open(url, "_blank");
   };
 
-  return (
-    <Card className="w-full max-w-5xl mx-auto">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <Button variant="outline" size="icon" onClick={handlePreviousMonth}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <div className="flex items-center gap-2">
-            <Select
-              value={currentMonth.toString()}
-              onValueChange={handleMonthChange}
-            >
-              <SelectTrigger className="w-[140px]">
-                <SelectValue placeholder={months[currentMonth]} />
-              </SelectTrigger>
-              <SelectContent>
-                {months.map((month, index) => (
-                  <SelectItem key={index} value={index.toString()}>
-                    {month}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <CardTitle>{currentYear}</CardTitle>
-          </div>
-          <Button variant="outline" size="icon" onClick={handleNextMonth}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-7 gap-2">
-          {days.map((day, index) => (
-            <div key={index} className="font-medium text-center py-2 border-b">
-              {day}
-            </div>
-          ))}
-          {calendarDays.map((day, index) => {
-            const dayMeetings = day ? getMeetingsForDay(day) : [];
-            const isToday =
-              day === new Date().getDate() &&
-              currentMonth === new Date().getMonth() &&
-              currentYear === new Date().getFullYear();
+  const handleMeetingClick = (meeting: ZoomMeeting) => {
+    setSelectedMeeting(meeting);
+    setEditedMeeting({
+      topic: meeting.topic,
+      start_time: formatDateTimeLocal(meeting.start_time),
+      duration: meeting.duration,
+    });
+    setActiveTab("details");
+    setIsDialogOpen(true);
+  };
 
-            return (
+  const handleDialogClose = () => {
+    setIsDialogOpen(false);
+    setSelectedMeeting(null);
+  };
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+  };
+
+  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setEditedMeeting((prev) => ({
+      ...prev,
+      [name]: name === "duration" ? Number.parseInt(value) : value,
+    }));
+  };
+
+  const handleDurationChange = (value: string) => {
+    setEditedMeeting((prev) => ({
+      ...prev,
+      duration: Number.parseInt(value),
+    }));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedMeeting) return;
+
+    try {
+      const updatedMeeting = await updateMeeting(selectedMeeting.id, {
+        topic: editedMeeting.topic,
+        start_time: editedMeeting.start_time,
+        duration: editedMeeting.duration,
+      });
+
+      // Update the meetings list
+      setMeetings((prev) =>
+        prev.map((meeting) =>
+          meeting.id === selectedMeeting.id ? updatedMeeting : meeting
+        )
+      );
+
+      setIsDialogOpen(false);
+      setSelectedMeeting(null);
+    } catch (error) {
+      console.error("Failed to update meeting:", error);
+    }
+  };
+
+  const handleDeleteClick = () => {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!selectedMeeting) return;
+
+    try {
+      await deleteMeeting(selectedMeeting.id);
+
+      // Remove the meeting from the list
+      setMeetings((prev) =>
+        prev.filter((meeting) => meeting.id !== selectedMeeting.id)
+      );
+
+      setIsDeleteDialogOpen(false);
+      setIsDialogOpen(false);
+      setSelectedMeeting(null);
+    } catch (error) {
+      console.error("Failed to delete meeting:", error);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setIsDeleteDialogOpen(false);
+  };
+
+  return (
+    <>
+      <Card className="w-full max-w-5xl mx-auto">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <Button variant="outline" size="icon" onClick={handlePreviousMonth}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="flex items-center gap-2">
+              <Select
+                value={currentMonth.toString()}
+                onValueChange={handleMonthChange}
+              >
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder={months[currentMonth]} />
+                </SelectTrigger>
+                <SelectContent>
+                  {months.map((month, index) => (
+                    <SelectItem key={index} value={index.toString()}>
+                      {month}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <CardTitle>{currentYear}</CardTitle>
+            </div>
+            <Button variant="outline" size="icon" onClick={handleNextMonth}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-7 gap-2">
+            {days.map((day, index) => (
               <div
                 key={index}
-                className={`
-                  min-h-[140px] p-1 border border-border rounded-md
-                  ${day === null ? "bg-muted/20" : "hover:bg-muted/50"}
-                  ${isToday ? "ring-2 ring-primary ring-inset" : ""}
-                `}
+                className="font-medium text-center py-2 border-b"
               >
-                {day && (
-                  <>
-                    <div
-                      className={`text-sm font-medium p-1 ${
-                        isToday ? "text-primary" : ""
-                      }`}
-                    >
-                      {day}
-                    </div>
-                    <div className="space-y-1 overflow-y-auto max-h-[110px]">
-                      {loading ? (
-                        <div className="text-xs text-muted-foreground text-center py-2">
-                          Loading...
-                        </div>
-                      ) : dayMeetings.length > 0 ? (
-                        dayMeetings.map((meeting) => (
-                          <TooltipProvider key={meeting.id}>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div
-                                  className="text-xs p-1.5 rounded bg-primary/10 border-l-2 border-primary truncate cursor-pointer hover:bg-primary/20"
-                                  onClick={() =>
-                                    openMeetingLink(meeting.join_url)
-                                  }
-                                >
-                                  <div className="font-medium">
-                                    {meeting.topic}
+                {day}
+              </div>
+            ))}
+            {calendarDays.map((day, index) => {
+              const dayMeetings = day ? getMeetingsForDay(day) : [];
+              const isToday =
+                day === new Date().getDate() &&
+                currentMonth === new Date().getMonth() &&
+                currentYear === new Date().getFullYear();
+
+              return (
+                <div
+                  key={index}
+                  className={`
+                    min-h-[140px] p-1 border border-border rounded-md
+                    ${day === null ? "bg-muted/20" : "hover:bg-muted/50"}
+                    ${isToday ? "ring-2 ring-primary ring-inset" : ""}
+                  `}
+                >
+                  {day && (
+                    <>
+                      <div
+                        className={`text-sm font-medium p-1 ${
+                          isToday ? "text-primary" : ""
+                        }`}
+                      >
+                        {day}
+                      </div>
+                      <div className="space-y-1 overflow-y-auto max-h-[110px]">
+                        {loading ? (
+                          <div className="text-xs text-muted-foreground text-center py-2">
+                            Loading...
+                          </div>
+                        ) : dayMeetings.length > 0 ? (
+                          dayMeetings.map((meeting) => (
+                            <TooltipProvider key={meeting.id}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div
+                                    className="text-xs p-1.5 rounded bg-primary/10 border-l-2 border-primary truncate cursor-pointer hover:bg-primary/20"
+                                    onClick={() => handleMeetingClick(meeting)}
+                                  >
+                                    <div className="font-medium">
+                                      {meeting.topic}
+                                    </div>
+                                    <div className="flex items-center gap-1 text-muted-foreground">
+                                      <Video className="h-3 w-3" />
+                                      <span>
+                                        {formatTime(meeting.start_time)} -{" "}
+                                        {calculateEndTime(
+                                          meeting.start_time,
+                                          meeting.duration
+                                        )}
+                                      </span>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center gap-1 text-muted-foreground">
-                                    <Video className="h-3 w-3" />
-                                    <span>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <div className="space-y-1">
+                                    <p className="font-medium">
+                                      {meeting.topic}
+                                    </p>
+                                    <p className="text-xs">
                                       {formatTime(meeting.start_time)} -{" "}
                                       {calculateEndTime(
                                         meeting.start_time,
                                         meeting.duration
                                       )}
-                                    </span>
+                                    </p>
+                                    <div className="flex items-center gap-1 text-xs">
+                                      <Users className="h-3 w-3" />
+                                      <span>
+                                        {meeting.participants} participants
+                                      </span>
+                                    </div>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="w-full mt-1 h-7 text-xs"
+                                      onClick={(e) =>
+                                        openMeetingLink(meeting.join_url, e)
+                                      }
+                                    >
+                                      <ExternalLink className="h-3 w-3 mr-1" />
+                                      Join Meeting
+                                    </Button>
                                   </div>
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <div className="space-y-1">
-                                  <p className="font-medium">{meeting.topic}</p>
-                                  <p className="text-xs">
-                                    {formatTime(meeting.start_time)} -{" "}
-                                    {calculateEndTime(
-                                      meeting.start_time,
-                                      meeting.duration
-                                    )}
-                                  </p>
-                                  <div className="flex items-center gap-1 text-xs">
-                                    <Users className="h-3 w-3" />
-                                    <span>
-                                      {meeting.participants} participants
-                                    </span>
-                                  </div>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="w-full mt-1 h-7 text-xs"
-                                    onClick={() =>
-                                      openMeetingLink(meeting.join_url)
-                                    }
-                                  >
-                                    <ExternalLink className="h-3 w-3 mr-1" />
-                                    Join Meeting
-                                  </Button>
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        ))
-                      ) : (
-                        <div className="text-xs text-muted-foreground text-center py-2">
-                          No meetings
-                        </div>
-                      )}
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ))
+                        ) : (
+                          <div className="text-xs text-muted-foreground text-center py-2">
+                            No meetings
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Meeting Dialog */}
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          {selectedMeeting && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Meeting Details</DialogTitle>
+                <DialogDescription>
+                  View and manage your Zoom meeting.
+                </DialogDescription>
+              </DialogHeader>
+
+              <Tabs
+                value={activeTab}
+                onValueChange={handleTabChange}
+                className="mt-4"
+              >
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="details">Details</TabsTrigger>
+                  <TabsTrigger value="edit">Edit</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="details" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-semibold">
+                      {selectedMeeting.topic}
+                    </h3>
+
+                    <div className="flex items-start gap-2 text-sm">
+                      <Calendar className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                      <div>{formatDate(selectedMeeting.start_time)}</div>
                     </div>
+
+                    <div className="flex items-start gap-2 text-sm">
+                      <Clock className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                      <div>
+                        {formatTime(selectedMeeting.start_time)} -{" "}
+                        {calculateEndTime(
+                          selectedMeeting.start_time,
+                          selectedMeeting.duration
+                        )}
+                        <div className="text-muted-foreground">
+                          Duration: {selectedMeeting.duration} minutes
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2 text-sm">
+                      <Users className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                      <div>{selectedMeeting.participants} participants</div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between">
+                    <Button
+                      variant="destructive"
+                      onClick={handleDeleteClick}
+                      className="gap-1"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </Button>
+                    <Button
+                      onClick={(e) =>
+                        openMeetingLink(selectedMeeting.join_url, e)
+                      }
+                      className="gap-1"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Join Meeting
+                    </Button>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="edit" className="space-y-4 mt-4">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="topic">Meeting Name</Label>
+                      <Input
+                        id="topic"
+                        name="topic"
+                        value={editedMeeting.topic}
+                        onChange={handleEditChange}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="start_time">Start Time</Label>
+                      <Input
+                        id="start_time"
+                        name="start_time"
+                        type="datetime-local"
+                        value={editedMeeting.start_time}
+                        onChange={handleEditChange}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="duration">Duration (minutes)</Label>
+                      <Select
+                        value={editedMeeting.duration.toString()}
+                        onValueChange={handleDurationChange}
+                      >
+                        <SelectTrigger id="duration">
+                          <SelectValue placeholder="Select duration" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="15">15 minutes</SelectItem>
+                          <SelectItem value="30">30 minutes</SelectItem>
+                          <SelectItem value="45">45 minutes</SelectItem>
+                          <SelectItem value="60">1 hour</SelectItem>
+                          <SelectItem value="90">1.5 hours</SelectItem>
+                          <SelectItem value="120">2 hours</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </TabsContent>
+              </Tabs>
+
+              <DialogFooter>
+                {activeTab === "edit" && (
+                  <>
+                    <Button variant="outline" onClick={handleDialogClose}>
+                      Cancel
+                    </Button>
+                    <Button onClick={handleSaveEdit}>Save Changes</Button>
                   </>
                 )}
-              </div>
-            );
-          })}
-        </div>
-      </CardContent>
-    </Card>
+                {activeTab === "details" && (
+                  <Button variant="outline" onClick={handleDialogClose}>
+                    Close
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog
+        open={isDeleteDialogOpen}
+        onOpenChange={setIsDeleteDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the meeting {selectedMeeting?.id}.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleDeleteCancel}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
